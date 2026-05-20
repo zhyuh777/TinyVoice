@@ -5,7 +5,6 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use tauri::Manager;
 
 // ---- Data types ----
@@ -71,23 +70,22 @@ fn read_file(path: String) -> Option<String> {
 }
 
 #[tauri::command]
-fn get_library(app: tauri::AppHandle) -> Vec<Book> {
+fn get_library(app: tauri::AppHandle) -> serde_json::Value {
     let lib_path = app_data_dir(&app).join("library.json");
     fs::read_to_string(&lib_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or(serde_json::json!([]))
 }
 
 #[tauri::command]
-fn save_library(app: tauri::AppHandle, library: Vec<Book>) -> bool {
+fn save_library(app: tauri::AppHandle, library: serde_json::Value) -> bool {
     let lib_path = app_data_dir(&app).join("library.json");
     ensure_dir(&lib_path);
-    if let Ok(json) = serde_json::to_string_pretty(&library) {
-        fs::write(&lib_path, json).is_ok()
-    } else {
-        false
-    }
+    serde_json::to_string_pretty(&library)
+        .ok()
+        .and_then(|s| fs::write(&lib_path, s).ok())
+        .is_some()
 }
 
 #[tauri::command]
@@ -201,7 +199,7 @@ async fn choose_folder(app: tauri::AppHandle) -> Option<String> {
 }
 
 #[tauri::command]
-fn tts_generate(_app: tauri::AppHandle, sentences: Vec<Sentence>, output_dir: Option<String>) -> TtsResult {
+async fn tts_generate(app: tauri::AppHandle, sentences: Vec<Sentence>, output_dir: Option<String>) -> TtsResult {
     let dir = output_dir.unwrap_or_else(|| {
         std::env::temp_dir()
             .join("novel-player-tts")
@@ -209,14 +207,14 @@ fn tts_generate(_app: tauri::AppHandle, sentences: Vec<Sentence>, output_dir: Op
             .unwrap_or("/tmp/novel-player-tts")
             .into()
     });
-    let _ = fs::create_dir_all(&dir);
+    let _ = tokio::fs::create_dir_all(&dir).await;
 
     let n = sentences.len();
     let mut files: Vec<Option<String>> = vec![None; n];
     let mut errors: Vec<String> = Vec::new();
 
     for (i, sent) in sentences.iter().enumerate() {
-        let text = sent.text.trim();
+        let text = sent.text.trim().to_string();
         if text.is_empty() { continue; }
 
         use std::hash::{Hash, Hasher};
@@ -227,37 +225,36 @@ fn tts_generate(_app: tauri::AppHandle, sentences: Vec<Sentence>, output_dir: Op
         sent.rate.hash(&mut hasher);
         let hash = format!("{:08x}", hasher.finish());
 
-        let output_path = format!(
-            "{}/s_{:05}_{}.mp3",
-            dir,
-            i,
-            &hash[..8]
-        );
+        let output_path = format!("{}/s_{:05}_{}.mp3", dir, i, &hash[..8]);
 
         // Skip if already generated
-        if let Ok(meta) = fs::metadata(&output_path) {
+        if let Ok(meta) = tokio::fs::metadata(&output_path).await {
             if meta.len() > 100 {
                 files[i] = Some(output_path);
                 continue;
             }
         }
 
-        // Call edge-tts via Python (macOS) or bundled script
         let voice = if sent.voice_gender == "male" {
             "zh-CN-YunxiNeural"
         } else {
             "zh-CN-XiaoxiaoNeural"
         };
 
-        let result = Command::new("edge-tts")
-            .args([
-                "-v", voice,
-                "--pitch", &sent.pitch,
-                "--rate", &sent.rate,
-                "-t", text,
-                "--write-media", &output_path,
-            ])
-            .output();
+        // Use bundled edge-tts binary, fallback to system
+        let edge_tts_path = app.path().resource_dir()
+            .unwrap_or_default()
+            .join("binaries").join("edge-tts");
+        let edge_tts = if edge_tts_path.exists() {
+            edge_tts_path.to_str().unwrap_or("edge-tts").to_string()
+        } else {
+            "edge-tts".to_string()
+        };
+
+        let result = tokio::process::Command::new(&edge_tts)
+            .args(["-v", voice, "--pitch", &sent.pitch, "--rate", &sent.rate, "-t", &text, "--write-media", &output_path])
+            .output()
+            .await;
 
         match result {
             Ok(o) if o.status.success() && std::path::Path::new(&output_path).exists() => {

@@ -4,11 +4,10 @@
   "version": "1.0.0",
   "identifier": "com.tinyvoice.desktop",
   "build": {
-    "frontendDist": "../src",
-    "devUrl": "http://localhost:1420",
-    "beforeBundleCommand": ""
+    "frontendDist": "../src"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "TinyVoice",
@@ -16,9 +15,7 @@
         "height": 640,
         "minWidth": 780,
         "minHeight": 500,
-        "resizable": true,
-        "fullscreen": false,
-        "titleBarStyle": "Overlay"
+        "resizable": true
       }
     ],
     "security": {
@@ -36,10 +33,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "../src/**/*"
-    ],
-    "macOS": {
-      "minimumSystemVersion": "10.15"
-    }
+      "../src/**/*",
+      "binaries/edge-tts"
+    ]
   }
 }

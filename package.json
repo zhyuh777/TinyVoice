@@ -5,10 +5,8 @@
   "description": "TinyVoice - 智能语音朗读器，支持多格式电子书导入与神经语音合成",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
-    "build": "electron-builder",
-    "build:mac": "electron-builder --mac",
-    "build:win": "electron-builder --win"
+    "tauri:dev": "cd src && python3 -m http.server 1420 & sleep 1 && cd ../src-tauri && cargo build && ../target/debug/tinyvoice",
+    "tauri:build": "cd src-tauri && cargo build --release && cp ../src/*.html ../src/*.js ../src/*.css ../src-tauri/target/release/bundle/macos/TinyVoice.app/Contents/Resources/ && create-dmg --dmg-title=TinyVoice --overwrite --no-code-sign src-tauri/target/release/bundle/macos/TinyVoice.app ../dist/"
   },
   "build": {
     "appId": "com.tinyvoice.app",
