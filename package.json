@@ -29,14 +29,21 @@
         {
           "from": ".venv",
           "to": ".venv",
-          "filter": ["**/*", "!lib/python*/site-packages/pip/**", "!**/__pycache__/**", "!**/*.dist-info/**"]
+          "filter": [
+            "**/*",
+            "!lib/python*/site-packages/pip/**",
+            "!**/__pycache__/**",
+            "!**/*.dist-info/**"
+          ]
         }
       ]
     },
     "win": {
       "target": {
         "target": "nsis",
-        "arch": ["x64"]
+        "arch": [
+          "x64"
+        ]
       },
       "icon": "assets/icon-256.png"
     },
@@ -54,8 +61,9 @@
     "adm-zip": "^0.5.17"
   },
   "devDependencies": {
-    "electron-builder": "^25.1.8",
-    "electron": "^33.4.11"
+    "@tauri-apps/cli": "^2.11.2",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
   },
   "author": "TinyVoice"
 }
