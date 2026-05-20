@@ -35,6 +35,9 @@
     "resources": [
       "../src/**/*",
       "binaries/edge-tts"
-    ]
+    ],
+    "macOS": {
+      "entitlements": "./entitlements.plist"
+    }
   }
 }
