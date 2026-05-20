@@ -1,202 +1,199 @@
-// Minimal Edge TTS client — implements the Microsoft Edge Read Aloud
-// WebSocket protocol using only Node.js built-in modules.
-// Produces MP3 audio, no external dependencies or Python needed.
+// Edge TTS client — implements the Microsoft Edge Read Aloud WebSocket
+// protocol using only Node.js built-in modules. No Python needed.
+// Supports HTTP CONNECT proxy for users behind firewalls.
 
-const https = require('https');
+const http = require('http');
+const tls = require('tls');
 const crypto = require('crypto');
 const fs = require('fs');
 
-const EDGE_HOST = 'speech.platform.bing.com';
-const EDGE_PATH = '/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4';
+const HOST = 'speech.platform.bing.com';
+const PATH = '/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4';
 
-const SSML_TMPL = (voice, rate, pitch, text) =>
+const SSML = (voice, rate, pitch, text) =>
 `<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" xmlns:emo="http://www.w3.org/2009/10/emotionml" version="1.0" xml:lang="zh-CN">
-  <voice name="${voice}">
-    <prosody rate="${rate}" pitch="${pitch}">${text}</prosody>
-  </voice>
+  <voice name="${voice}"><prosody rate="${rate}" pitch="${pitch}">${_esc(text)}</prosody></voice>
 </speak>`;
 
 const VOICES = { female: 'zh-CN-XiaoxiaoNeural', male: 'zh-CN-YunxiNeural' };
 
-/**
- * Synthesize text to an MP3 file via Microsoft Edge TTS.
- * Returns a Promise that resolves with the output path on success.
- */
+function _getProxy() {
+  const u = process.env.https_proxy || process.env.HTTPS_PROXY ||
+            process.env.http_proxy || process.env.HTTP_PROXY || '';
+  const m = u.match(/https?:\/\/([^:]+):(\d+)/);
+  if (m) return { host: m[1], port: parseInt(m[2]) };
+  // Fallback for common proxy tools (clash, v2ray)
+  if (process.platform === 'win32') return { host: '127.0.0.1', port: 7890 };
+  return null;
+}
+
 function synthesize(text, voiceGender, pitchHz, rateStr, outputPath) {
   return new Promise((resolve, reject) => {
     try {
       const voice = VOICES[voiceGender] || VOICES.female;
-      const ssml = SSML_TMPL(voice, rateStr, pitchHz, _xmlEscape(text));
+      const wsKey = crypto.randomBytes(16).toString('base64');
+      const proxy = _getProxy();
 
-      // Try common proxy env vars (for users behind GFW)
-      const proxyUrl = process.env.https_proxy || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.HTTP_PROXY || '';
-      let proxyHost = null, proxyPort = null;
-      if (proxyUrl) {
-        const m = proxyUrl.match(/https?:\/\/([^:]+):(\d+)/);
-        if (m) { proxyHost = m[1]; proxyPort = parseInt(m[2]); }
-      }
+      const wsHandshake = [
+        `GET ${PATH} HTTP/1.1`,
+        `Host: ${HOST}`,
+        'Connection: Upgrade',
+        'Upgrade: websocket',
+        `Sec-WebSocket-Version: 13`,
+        `Sec-WebSocket-Key: ${wsKey}`,
+        'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Origin: chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
+        '', '',
+      ].join('\r\n');
 
-      const opts = {
-        hostname: proxyHost || EDGE_HOST,
-        port: proxyPort || 443,
-        path: proxyHost ? `https://${EDGE_HOST}${EDGE_PATH}` : EDGE_PATH,
-        method: 'GET',
-        headers: {
-          'Connection': 'Upgrade',
-          'Upgrade': 'websocket',
-          'Sec-WebSocket-Version': '13',
-          'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64'),
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Origin': 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Host': EDGE_HOST,
-        },
-        rejectUnauthorized: true,
-        timeout: 15000,
-      };
+      function handleUpgrade(sock, viaProxy) {
+        let buf = '';
+        let upgraded = false;
 
-      const req = https.request(opts);
+        sock.on('data', d => {
+          if (!upgraded) {
+            buf += d.toString('latin1');
+            const sep = buf.indexOf('\r\n\r\n');
+            if (sep === -1) return;
+            const status = buf.slice(0, sep).split('\r\n')[0];
+            if (!status.includes('101')) {
+              reject(new Error('Edge TTS: HTTP ' + status));
+              return;
+            }
+            upgraded = true;
+            // Remaining data after headers
+            const remain = Buffer.from(buf.slice(sep + 4), 'latin1');
 
-      // Timeout handling
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error('Edge TTS 连接超时（15秒），请检查网络或设置代理'));
-      });
-
-      req.on('upgrade', (res, socket) => {
-        // Send config message
-        const config = JSON.stringify({
-          context: {
-            synthesis: {
-              audio: {
+            // Send config + SSML
+            const config = JSON.stringify({
+              context: { synthesis: { audio: {
                 metadataoptions: { sentenceBoundaryEnabled: false, wordBoundaryEnabled: true },
                 outputFormat: 'audio-24khz-48kbitrate-mono-mp3',
-              },
-            },
-          },
+              }}},
+            });
+            _wsSend(sock, config);
+            const ssmlText = SSML(voice, rateStr, pitchHz, text);
+            _wsSend(sock, ssmlText);
+
+            // Collect audio
+            const chunks = [];
+            if (remain.length > 0) chunks.push(remain);
+            const t = setTimeout(() => { sock.destroy(); reject(new Error('Edge TTS 服务响应超时')); }, 30000);
+
+            sock.on('data', dd => { clearTimeout(t); chunks.push(dd); });
+            sock.on('end', () => { clearTimeout(t); _decode(chunks, outputPath, resolve, reject); });
+            sock.on('error', e => { clearTimeout(t); reject(e); });
+          }
         });
 
-        _wsSend(socket, config);
-        _wsSend(socket, ssml);
-
-        const chunks = [];
-        const socketTimeout = setTimeout(() => {
-          socket.destroy();
-          reject(new Error('Edge TTS 服务响应超时'));
-        }, 30000);
-
-        socket.on('data', (data) => {
-          clearTimeout(socketTimeout);
-          chunks.push(data);
+        sock.on('error', e => {
+          if (!upgraded) reject(new Error('Edge TTS 连接失败: ' + e.message));
         });
 
-        socket.on('end', () => {
-          clearTimeout(socketTimeout);
-          _processAudio(chunks, outputPath, resolve, reject);
-        });
+        const t = setTimeout(() => { sock.destroy(); reject(new Error('Edge TTS: WebSocket 握手超时，可能网络不通或代理未开')); }, 15000);
+        sock.once('data', () => clearTimeout(t));
 
-        socket.on('error', (err) => {
-          clearTimeout(socketTimeout);
-          reject(err);
-        });
-      });
+        sock.write(wsHandshake);
+      }
 
-      req.on('error', reject);
-      req.end();
-    } catch (e) {
-      reject(e);
-    }
+      if (proxy) {
+        // HTTP CONNECT tunnel through proxy
+        const cr = http.request({
+          hostname: proxy.host, port: proxy.port,
+          method: 'CONNECT', path: `${HOST}:443`,
+          timeout: 8000,
+        });
+        cr.on('connect', (res, raw) => {
+          const ts = tls.connect({ socket: raw, host: HOST, servername: HOST }, () => {
+            handleUpgrade(ts, true);
+          });
+          ts.on('error', e => reject(new Error('TLS失败: ' + e.message)));
+        });
+        cr.on('error', e => reject(new Error(`代理(${proxy.host}:${proxy.port})连接失败: ${e.message}。确认代理已开启？`)));
+        cr.on('timeout', () => { cr.destroy(); reject(new Error('代理连接超时')); });
+        cr.end();
+      } else {
+        // Direct TLS
+        const ts = tls.connect({ host: HOST, port: 443, servername: HOST, timeout: 15000 }, () => {
+          handleUpgrade(ts, false);
+        });
+        ts.on('error', e => reject(new Error('TLS连接失败: ' + e.message)));
+        ts.on('timeout', () => { ts.destroy(); reject(new Error('Edge TTS 连接超时')); });
+      }
+    } catch (e) { reject(e); }
   });
 }
 
-// ---- WebSocket helpers ----
-
-function _wsSend(socket, payload) {
+// ---- WebSocket frame sender ----
+function _wsSend(sock, payload) {
   const buf = Buffer.from(payload, 'utf-8');
   const len = buf.length;
-  const frame = Buffer.alloc(2 + (len < 126 ? 0 : 2) + 4 + len);
 
-  // FIN + opcode=1 (text)
-  frame[0] = 0x81;
-
-  let offset = 2;
+  let hdr;
   if (len < 126) {
-    frame[1] = len | 0x80; // mask bit set
+    hdr = Buffer.allocUnsafe(6);
+    hdr[0] = 0x81; hdr[1] = len | 0x80;
+  } else if (len < 65536) {
+    hdr = Buffer.allocUnsafe(8);
+    hdr[0] = 0x81; hdr[1] = 126 | 0x80;
+    hdr.writeUInt16BE(len, 2);
   } else {
-    frame[1] = 126 | 0x80;
-    frame.writeUInt16BE(len, 2);
-    offset = 4;
+    hdr = Buffer.allocUnsafe(14);
+    hdr[0] = 0x81; hdr[1] = 127 | 0x80;
+    hdr.writeBigUInt64BE(BigInt(len), 2);
   }
-
-  // Mask key
   const mask = crypto.randomBytes(4);
-  mask.copy(frame, offset);
-  offset += 4;
+  hdr[hdr.length - 4] = mask[0];
+  hdr[hdr.length - 3] = mask[1];
+  hdr[hdr.length - 2] = mask[2];
+  hdr[hdr.length - 1] = mask[3];
 
-  // Payload (masked)
-  buf.copy(frame, offset);
-  for (let i = 0; i < len; i++) {
-    frame[offset + i] ^= mask[i % 4];
-  }
+  const masked = Buffer.allocUnsafe(len);
+  for (let i = 0; i < len; i++) masked[i] = buf[i] ^ mask[i % 4];
 
-  socket.write(frame);
+  sock.write(Buffer.concat([hdr, masked]));
 }
 
-function _xmlEscape(s) {
+function _esc(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
           .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function _processAudio(chunks, outputPath, resolve, reject) {
+// Decode WebSocket binary frames → Edge TTS binary format → MP3
+function _decode(chunks, outputPath, resolve, reject) {
   const full = Buffer.concat(chunks);
-  const audioChunks = [];
+  const audio = [];
   let pos = 0;
 
-  // Parse WebSocket frames to extract binary payloads
-  while (pos < full.length) {
-    if (pos + 2 > full.length) break;
-    const b0 = full[pos];
-    const b1 = full[pos + 1];
-    const opcode = b0 & 0x0f;
-    const masked = (b1 & 0x80) !== 0;
-    let payloadLen = b1 & 0x7f;
-    let headerLen = 2;
+  while (pos + 2 <= full.length) {
+    const opcode = full[pos] & 0x0f;
+    let plen = full[pos + 1] & 0x7f;
+    let h = 2;
+    if (plen === 126) { plen = full.readUInt16BE(pos + 2); h += 2; }
+    else if (plen === 127) { plen = Number(full.readBigUInt64BE(pos + 2)); h += 8; }
 
-    if (payloadLen === 126) { payloadLen = full.readUInt16BE(pos + 2); headerLen += 2; }
-    else if (payloadLen === 127) { payloadLen = Number(full.readBigUInt64BE(pos + 2)); headerLen += 8; }
+    const masked = (full[pos + 1] & 0x80) !== 0;
+    const mk = masked ? full.slice(pos + h, pos + h + 4) : null;
+    if (masked) h += 4;
 
-    const maskKey = masked ? full.slice(pos + headerLen, pos + headerLen + 4) : null;
-    if (masked) headerLen += 4;
+    if (pos + h + plen > full.length) break;
+    const payload = full.slice(pos + h, pos + h + plen);
 
-    const payload = full.slice(pos + headerLen, pos + headerLen + payloadLen);
-    if (masked) {
-      for (let i = 0; i < payload.length; i++) payload[i] ^= maskKey[i % 4];
-    }
+    if (masked) { for (let i = 0; i < payload.length; i++) payload[i] ^= mk[i % 4]; }
 
-    // Binary frames (opcode=2) contain audio, text frames (opcode=1) contain JSON headers
-    if (opcode === 2 && payload.length > 0) {
-      // Parse Edge TTS binary header: headerLen(2) + header + audio data
-      if (payload.length >= 2) {
-        const hLen = payload.readUInt16BE(0);
-        const audioData = payload.slice(2 + hLen);
-        if (audioData.length > 0) audioChunks.push(audioData);
+    if (opcode === 2 && payload.length > 2) {
+      const hl = payload.readUInt16BE(0);
+      if (payload.length > 2 + hl) {
+        audio.push(payload.slice(2 + hl));
       }
     }
 
-    pos += headerLen + payloadLen;
+    pos += h + plen;
   }
 
-  if (audioChunks.length === 0) {
-    reject(new Error('Edge TTS: no audio data received'));
-    return;
-  }
-
-  try {
-    fs.writeFileSync(outputPath, Buffer.concat(audioChunks));
-    resolve(outputPath);
-  } catch (e) {
-    reject(e);
-  }
+  if (audio.length === 0) { reject(new Error('Edge TTS: 未收到音频数据')); return; }
+  try { fs.writeFileSync(outputPath, Buffer.concat(audio)); resolve(outputPath); }
+  catch (e) { reject(e); }
 }
 
 module.exports = { synthesize };
