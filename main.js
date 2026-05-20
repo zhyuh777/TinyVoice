@@ -144,22 +144,19 @@ function synthesizeMacOS(text, voiceGender, pitchHz, rateStr, outputPath) {
 
 function synthesizeWindows(text, voiceGender, pitchHz, rateStr, outputPath) {
   const rateNum = parseFloat(rateStr) || 0;
-  // SAPI Rate: -10 to 10
   const sapiRate = Math.max(-10, Math.min(10, Math.round(rateNum / 10)));
-
   const psPath = outputPath.replace(/'/g, "''");
-  const voices = SAPI_VOICES[voiceGender] || SAPI_VOICES.female;
-  const voiceSelect = voices.map(v => `try{$s.SelectVoice('${v}');$voiceFound='${v}'}catch{}`).join(';');
-
-  // Use Base64 to safely transport text through PowerShell without any escaping issues
   const b64Text = Buffer.from(text, 'utf-8').toString('base64');
 
+  // Auto-detect installed voices instead of hardcoding
   const psScript = `\
 Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$voiceFound = ''
-${voiceSelect}
-if ($voiceFound -eq '') { Write-Error "NO_CHINESE_VOICE"; exit 1 }
+$all = $s.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }
+$zh = $all | Where-Object { $_ -match 'Chinese|Microsoft.*Hui|Microsoft.*Kang|Microsoft.*Yao|Microsoft.*Han|zh-CN|zh-TW|zh-HK' }
+$vo = if ($zh) { $zh | Select-Object -First 1 } else { $all | Select-Object -First 1 }
+if (-not $vo) { Write-Error "NO_VOICE_INSTALLED"; exit 1 }
+$s.SelectVoice($vo)
 $s.Rate = ${sapiRate}
 $text = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Text}'))
 try {
@@ -167,7 +164,7 @@ try {
   $s.Speak($text)
   $s.Dispose()
   if (-not (Test-Path '${psPath}')) { Write-Error "WAV_NOT_CREATED"; exit 1 }
-  Write-Output "OK"
+  Write-Output ("OK:" + $vo)
 } catch {
   Write-Error ("TTS_ERROR:" + $_.Exception.Message)
   try { $s.Dispose() } catch {}
