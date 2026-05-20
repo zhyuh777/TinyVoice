@@ -45,6 +45,7 @@
       "main.js",
       "preload.js",
       "pdf-parser.js",
+      "edge-tts.js",
       "src/**/*",
       "package.json"
     ]

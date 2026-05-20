@@ -143,74 +143,8 @@ function synthesizeMacOS(text, voiceGender, pitchHz, rateStr, outputPath) {
 }
 
 function synthesizeWindows(text, voiceGender, pitchHz, rateStr, outputPath) {
-  const rateNum = parseFloat(rateStr) || 0;
-  const sapiRate = Math.max(-10, Math.min(10, Math.round(rateNum / 10)));
-  const psPath = outputPath.replace(/'/g, "''");
-  const b64Text = Buffer.from(text, 'utf-8').toString('base64');
-
-  // Use SAPI COM (SAPI.SpVoice) instead of System.Speech to avoid
-  // AccessViolationException on some Windows installations
-  const psScript = `\
-$text = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Text}'))
-$voice = $null
-try {
-  $s = New-Object -ComObject SAPI.SpVoice
-  $all = $s.GetVoices()
-  foreach ($v in $all) {
-    $desc = $v.GetDescription()
-    if ($desc -match 'Chinese|Hui|Kang|Yao|Han|zh-CN|zh-TW|zh-HK|Zira|David') {
-      $voice = $v; break
-    }
-  }
-  if (-not $voice) { $voice = $all.Item(0) }
-  if (-not $voice) { Write-Error "NO_VOICE"; exit 1 }
-  $s.Voice = $voice
-  $s.Rate = ${sapiRate}
-  $fs = New-Object -ComObject SAPI.SpFileStream
-  $fs.Open('${psPath}', 3, $false)
-  $s.AudioOutputStream = $fs
-  $s.Speak($text, 0)
-  $fs.Close()
-  Write-Output ("OK:" + $voice.GetDescription())
-} catch {
-  Write-Error ("ERROR:" + $_.Exception.Message)
-  try { $fs.Close() } catch {}
-  exit 1
-}`;
-
-  const tmpScript = path.join(os.tmpdir(), `tts_${Date.now()}.ps1`);
-  fs.writeFileSync(tmpScript, '﻿' + psScript, { encoding: 'utf-8' });
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn('powershell', ['-ExecutionPolicy', 'Bypass', '-File', tmpScript], { windowsHide: true });
-    let stderr = '';
-    proc.stdout.on('data', () => {});
-    proc.stderr.on('data', d => { stderr += d.toString(); });
-    proc.on('close', code => {
-      try { fs.unlinkSync(tmpScript); } catch {}
-      if (code !== 0) {
-        const cleanErr = stderr
-          .replace(/\s+/g, ' ').trim()
-          .replace(/.tts_\d+\.ps1/g, 'tts.ps1')
-          .slice(0, 300);
-        reject(new Error(cleanErr || `PowerShell exit ${code}`));
-        return;
-      }
-      try {
-        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 100) {
-          resolve(outputPath);
-        } else {
-          reject(new Error('WAV file empty or missing'));
-        }
-      } catch (e) {
-        reject(new Error('WAV file check failed: ' + e.message));
-      }
-    });
-    proc.on('error', err => {
-      try { fs.unlinkSync(tmpScript); } catch {}
-      reject(err);
-    });
-  });
+  const edgeTts = require('./edge-tts');
+  return edgeTts.synthesize(text, voiceGender, pitchHz, rateStr, outputPath);
 }
 
 ipcMain.handle('tts-generate', async (_, sentences, outputDir) => {
@@ -231,7 +165,7 @@ ipcMain.handle('tts-generate', async (_, sentences, outputDir) => {
       const pitchHz = sent.pitch || '+0Hz';
       const rateStr = sent.rate || '+0%';
       const hash = require('crypto').createHash('md5').update(text + gender + pitchHz + rateStr).digest('hex').slice(0, 8);
-      const outputPath = path.join(dir, `s_${String(idx).padStart(5, '0')}_${hash}${process.platform === 'win32' ? '.wav' : '.mp3'}`);
+      const outputPath = path.join(dir, `s_${String(idx).padStart(5, '0')}_${hash}.mp3`);
 
       if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
         files[idx] = outputPath;
