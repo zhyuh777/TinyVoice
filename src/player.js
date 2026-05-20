@@ -328,7 +328,8 @@ class PlayerController {
       if (this._playToken !== token) return;
       if (!b64) { this._nextTrack(); return; }
       this._killAudio();
-      const blob = new Blob([Uint8Array.from(atob(b64), c=>c.charCodeAt(0))],{type:'audio/mpeg'});
+      const mime = t.path.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg';
+      const blob = new Blob([Uint8Array.from(atob(b64), c=>c.charCodeAt(0))],{type:mime});
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url); audio.playbackRate = speed;
       audio.volume = parseInt(this.el.volume.value)/100;
