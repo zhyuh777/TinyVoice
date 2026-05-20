@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval'; media-src 'self' blob: data:; connect-src 'self' blob:;">
+  <title>TinyVoice</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside id="sidebar">
+  <div id="sidebar-header"><h1>TinyVoice</h1></div>
+
+  <!-- Tab switcher -->
+  <nav id="sidebar-tabs">
+    <button class="sidebar-tab active" data-view="books">📚 书架</button>
+    <button class="sidebar-tab" data-view="playlists">📻 歌单</button>
+  </nav>
+
+  <!-- Books view -->
+  <div id="sidebar-books" class="sidebar-view">
+    <ul id="book-list"></ul>
+    <div id="book-list-empty" class="sidebar-empty-msg">暂无书籍</div>
+    <div id="sidebar-books-actions">
+      <button id="btn-import-book" class="btn-text full-width">📖 导入电子书</button>
+    </div>
+  </div>
+
+  <!-- Playlists view -->
+  <div id="sidebar-playlists" class="sidebar-view" style="display:none">
+    <ul id="playlist-nav"></ul>
+    <div id="sidebar-pl-actions">
+      <button id="btn-new-playlist" class="btn-text full-width">＋ 新建歌单</button>
+      <button id="btn-import-audio" class="btn-text full-width">📥 导入音频</button>
+    </div>
+  </div>
+</aside>
+
+<!-- Main area -->
+<main id="main">
+  <!-- Bookshelf content -->
+  <div id="main-books" class="main-view">
+    <div id="main-books-toolbar">
+      <span class="main-title">📚 书架</span>
+      <button id="btn-settings" class="btn-icon" title="设置">⚙</button>
+    </div>
+    <div id="book-detail" class="empty-state">
+      <span class="empty-icon">📖</span>
+      <p>从左侧选择一本书</p>
+      <p class="hint">点击书名可导出为语音音频</p>
+    </div>
+  </div>
+
+  <!-- Playlist content -->
+  <div id="main-playlists" class="main-view" style="display:none">
+    <div id="main-pl-toolbar">
+      <span class="main-title" id="playlist-title">📻 我的收藏</span>
+      <div style="display:flex;gap:8px">
+        <button id="btn-delete-playlist" class="btn-mini" style="display:none">删除歌单</button>
+        <button id="btn-settings2" class="btn-icon" title="设置">⚙</button>
+      </div>
+    </div>
+    <div id="track-list-container">
+      <div id="track-list-empty" class="empty-state">
+        <span class="empty-icon">🎵</span>
+        <p>还没有音频</p>
+        <p class="hint">从书架导出电子书，或导入本地音频</p>
+      </div>
+      <ul id="track-list"></ul>
+    </div>
+  </div>
+</main>
+
+<!-- Player Bar -->
+<footer id="player-bar">
+  <div id="player-now">
+    <span id="player-track-name">未在播放</span>
+    <span id="player-time">00:00 / 00:00</span>
+  </div>
+  <input type="range" id="player-seek" min="0" max="1000" value="0">
+  <div id="player-controls">
+    <div class="ctrl-group">
+      <button id="btn-play" class="btn-play">▶</button>
+      <button id="btn-stop" class="btn-icon">■</button>
+    </div>
+    <div class="ctrl-group">
+      <label>语速 <span id="speed-label">1.00x</span></label>
+      <input type="range" id="speed-slider-play" min="50" max="300" value="100" step="5">
+    </div>
+    <div class="ctrl-group">
+      <label>音量</label>
+      <input type="range" id="volume" min="0" max="100" value="80">
+    </div>
+  </div>
+</footer>
+
+<!-- ====== MODALS ====== -->
+
+<!-- Settings Modal -->
+<div id="modal-overlay" class="modal-overlay" style="display:none" data-modal="settings">
+  <div class="modal" id="settings-modal">
+    <div class="modal-header">
+      <span>⚙ 设置</span>
+      <button class="modal-close" id="btn-close-settings">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="settings-section">
+        <div class="settings-label">主题配色</div>
+        <div class="theme-options">
+          <button class="theme-btn active" data-theme="light">☀️ 浅色</button>
+          <button class="theme-btn" data-theme="dark">🌙 深色</button>
+          <button class="theme-btn" data-theme="dopamine">🌈 多巴胺</button>
+          <button class="theme-btn" data-theme="vibrant">✨ 缤纷</button>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-label">默认导出路径</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="settings-export-path" style="font-size:11px;color:var(--text-secondary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">~/Downloads</span>
+          <button id="btn-choose-export-path" class="btn-mini">更改</button>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-label">显示</div>
+        <div class="settings-row">
+          <span>字体大小</span>
+          <select id="font-size-select">
+            <option value="12">小</option><option value="13" selected>默认</option>
+            <option value="15">大</option><option value="17">特大</option>
+          </select>
+        </div>
+        <div class="settings-row" style="margin-top:8px">
+          <span>界面缩放</span>
+          <input type="range" id="zoom-slider" min="80" max="150" value="100" step="5">
+          <span class="export-val" id="zoom-val">100%</span>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-label">关于</div>
+        <p class="settings-about">TinyVoice v1.0<br>Edge TTS 神经语音引擎</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Export Modal -->
+<div id="export-overlay" class="modal-overlay" style="display:none" data-modal="export">
+  <div class="modal" id="export-modal">
+    <div class="modal-header">
+      <span id="export-book-name">📖 导出音频</span>
+      <button class="modal-close" id="btn-close-export">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="settings-section">
+        <div class="settings-label">导出设置</div>
+        <div class="export-grid">
+          <div class="export-row"><label>语速</label><input type="range" id="speed-slider" min="50" max="300" value="90" step="5"><span class="export-val" id="speed-val">0.90x</span></div>
+          <div class="export-row"><label>拟真度</label><input type="range" id="naturalness" min="0" max="100" value="40"><span class="export-val" id="naturalness-val">40</span></div>
+          <div class="export-row"><label>句间停顿</label><input type="range" id="pause-ms" min="0" max="800" value="200" step="10"><span class="export-val" id="pause-val">200ms</span></div>
+          <div class="export-row"><label>情感强度</label><input type="range" id="emotion-level" min="0" max="100" value="50"><span class="export-val" id="emotion-val">50</span></div>
+          <div class="export-row"><label>朗读者</label>
+            <div class="voice-gender-btns">
+              <button class="voice-gender-btn active-female" data-g="female">女声</button>
+              <button class="voice-gender-btn" data-g="male">男声</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-label">导出位置</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="export-path-display" style="font-size:11px;color:var(--text-secondary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">~/Downloads</span>
+          <button id="btn-change-export-path" class="btn-mini">更改</button>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+        <button id="btn-start-export" class="btn-export">开始导出</button>
+        <span id="export-progress" style="font-size:12px;color:var(--text-secondary)"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="tts-engine.js"></script>
+<script src="book-manager.js"></script>
+<script src="player.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

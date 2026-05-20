@@ -1,0 +1,55 @@
+{
+  "name": "tinyvoice",
+  "productName": "TinyVoice",
+  "version": "1.0.0",
+  "description": "TinyVoice - 智能语音朗读器，支持多格式电子书导入与神经语音合成",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.tinyvoice.app",
+    "productName": "TinyVoice",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.icns"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "node_modules/**/*",
+      "!node_modules/.cache",
+      "!.venv"
+    ],
+    "extraResources": [
+      {
+        "from": ".venv",
+        "to": ".venv"
+      }
+    ],
+    "asarUnpack": [
+      ".venv/**"
+    ]
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.17",
+    "pdf-parse": "^2.4.5"
+  },
+  "devDependencies": {
+    "electron-builder": "^25.1.8",
+    "electron": "^33.4.11"
+  },
+  "author": "TinyVoice"
+}
