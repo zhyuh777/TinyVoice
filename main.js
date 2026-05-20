@@ -143,43 +143,77 @@ function synthesizeMacOS(text, voiceGender, pitchHz, rateStr, outputPath) {
 }
 
 function synthesizeWindows(text, voiceGender, pitchHz, rateStr, outputPath) {
-  // Map app params to SAPI SSML prosody values
   const rateNum = parseFloat(rateStr) || 0;
   const pitchNum = parseInt(pitchHz) || 0;
+  const sapiRate = Math.max(-10, Math.min(10, Math.round(rateNum / 10)));
+  const sapiPitch = Math.max(-10, Math.min(10, Math.round(pitchNum / 1.5)));
 
-  // SAPI rate: -10 to 10, map from percentage roughly
-  const sapiRate = Math.round(rateNum / 10);
-  // SAPI pitch: -10 to 10, map from Hz roughly
-  const sapiPitch = Math.round(pitchNum / 1.5);
+  // XML-escape text for SSML (must happen BEFORE PS escaping)
+  const xmlText = text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+
+  // PowerShell escaping for single-quoted string: only ' needs escaping as ''
+  const psPath = outputPath.replace(/'/g, "''");
 
   const voices = SAPI_VOICES[voiceGender] || SAPI_VOICES.female;
-  const voiceSelect = voices.map(v => `try { $s.SelectVoice('${v}') } catch {}`).join('; ');
+  const voiceSelect = voices.map(v => `try { $s.SelectVoice('${v}'); $voiceFound='${v}' } catch {}`).join('; ');
 
-  // Escape text for PowerShell
-  const safeText = text.replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`');
-
-  const psScript = `
+  // Use a here-string for the SSML to avoid PS string escaping nightmares
+  const psScript = `\
 Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$voiceFound = ''
 ${voiceSelect}
-$ssml = '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="zh-CN"><voice><prosody rate="${sapiRate}" pitch="${sapiPitch}">${safeText}</prosody></voice></speak>'
-$s.SetOutputToWaveFile('${outputPath.replace(/'/g, "''")}')
-$s.SpeakSsml($ssml)
-$s.Dispose()
-`.trim();
+if ($voiceFound -eq '') {
+  Write-Error "NO_CHINESE_VOICE:请安装中文语音包(设置→语音→添加语音)"
+  exit 1
+}
+$rate = ${sapiRate}
+$pitch = ${sapiPitch}
+$text = @'
+${xmlText}
+'@
+$ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'><voice name='$voiceFound'><prosody rate='$rate' pitch='$pitch'>$text</prosody></voice></speak>"
+try {
+  $s.SetOutputToWaveFile('${psPath}')
+  $s.SpeakSsml($ssml)
+  $s.Dispose()
+  if (-not (Test-Path '${psPath}')) { Write-Error "WAV_NOT_CREATED"; exit 1 }
+  Write-Output "OK:${psPath}"
+} catch {
+  Write-Error $_.Exception.Message
+  exit 1
+}`;
 
-  // Write script to temp file to avoid command-line length limits
   const tmpScript = path.join(os.tmpdir(), `tts_${Date.now()}.ps1`);
-  fs.writeFileSync(tmpScript, '﻿' + psScript, 'utf-8'); // BOM for PowerShell
+  fs.writeFileSync(tmpScript, '﻿' + psScript, 'utf-8');
 
   return new Promise((resolve, reject) => {
-    const proc = spawn('powershell', ['-ExecutionPolicy', 'Bypass', '-File', tmpScript]);
+    const proc = spawn('powershell', ['-ExecutionPolicy', 'Bypass', '-File', tmpScript], {
+      windowsHide: true,
+    });
     let stderr = '';
+    let stdout = '';
+    proc.stdout.on('data', d => { stdout += d.toString(); });
     proc.stderr.on('data', d => { stderr += d.toString(); });
     proc.on('close', code => {
       try { fs.unlinkSync(tmpScript); } catch {}
-      if (code !== 0 || !fs.existsSync(outputPath)) { reject(new Error(stderr.trim() || `exit ${code}`)); return; }
-      resolve(outputPath);
+      if (code !== 0) {
+        const errMsg = stderr.trim() || stdout.trim() || `exit ${code}`;
+        reject(new Error(errMsg));
+        return;
+      }
+      // Double-check the file has actual content
+      try {
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 100) {
+          resolve(outputPath);
+        } else {
+          reject(new Error('WAV file empty or missing'));
+        }
+      } catch (e) {
+        reject(new Error('WAV file check failed: ' + e.message));
+      }
     });
     proc.on('error', err => {
       try { fs.unlinkSync(tmpScript); } catch {}
