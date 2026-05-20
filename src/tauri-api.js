@@ -1,25 +1,52 @@
 // Tauri adapter — same API surface as the old electronAPI
+// Retries until Tauri runtime is ready (may take a moment in packaged apps)
 
 (function() {
-  var t = window.__TAURI__;
-  var invoke = t && t.core && t.core.invoke ? function(cmd, args) {
-    return t.core.invoke(cmd, args || {});
-  } : null;
+  var invoke = null;
+
+  function tryInit() {
+    var t = window.__TAURI__;
+    if (t && t.core && t.core.invoke) {
+      invoke = function(cmd, args) {
+        return t.core.invoke(cmd, args || {});
+      };
+      console.log('Tauri API ready');
+      return;
+    }
+    console.log('Tauri API not ready, retrying...');
+    setTimeout(tryInit, 100);
+  }
+
+  tryInit();
+
+  function call(cmd, args) {
+    if (invoke) return invoke(cmd, args);
+    return new Promise(function(resolve) {
+      // Wait up to 5 seconds for Tauri to initialize
+      var start = Date.now();
+      function wait() {
+        if (invoke) { resolve(invoke(cmd, args)); return; }
+        if (Date.now() - start > 5000) { console.log('Tauri timeout for ' + cmd); resolve(null); return; }
+        setTimeout(wait, 50);
+      }
+      wait();
+    });
+  }
 
   window.electronAPI = {
-    importBook:    function()  { return invoke ? invoke('import_book') : Promise.resolve(null); },
-    readFile:      function(p) { return invoke ? invoke('read_file', { path: p }) : Promise.resolve(null); },
-    getLibrary:    function()  { return invoke ? invoke('get_library') : Promise.resolve([]); },
-    saveLibrary:   function(l) { return invoke ? invoke('save_library', { library: l }) : Promise.resolve(false); },
-    ttsGenerate:   function(s, d) { return invoke ? invoke('tts_generate', { sentences: s, outputDir: d }) : Promise.resolve(null); },
-    ttsReadAudio:  function(p) { return invoke ? invoke('tts_read_audio', { path: p }) : Promise.resolve(null); },
-    saveSettings:  function(d) { return invoke ? invoke('save_settings', { data: d }) : Promise.resolve(false); },
-    loadSettings:  function()  { return invoke ? invoke('load_settings') : Promise.resolve(null); },
-    chooseFolder:  function()  { return invoke ? invoke('choose_folder') : Promise.resolve(null); },
-    deleteFile:    function(p) { return invoke ? invoke('delete_file', { path: p }) : Promise.resolve(false); },
-    importAudio:   function()  { return invoke ? invoke('import_audio') : Promise.resolve([]); },
-    savePlaylists: function(d) { return invoke ? invoke('save_playlists', { data: d }) : Promise.resolve(false); },
-    loadPlaylists: function()  { return invoke ? invoke('load_playlists') : Promise.resolve(null); },
-    exportAudio:   function()  { return invoke ? invoke('export_audio') : Promise.resolve(null); },
+    importBook:    function()  { return call('import_book'); },
+    readFile:      function(p) { return call('read_file', { path: p }); },
+    getLibrary:    function()  { return call('get_library'); },
+    saveLibrary:   function(l) { return call('save_library', { library: l }); },
+    ttsGenerate:   function(s, d) { return call('tts_generate', { sentences: s, outputDir: d }); },
+    ttsReadAudio:  function(p) { return call('tts_read_audio', { path: p }); },
+    saveSettings:  function(d) { return call('save_settings', { data: d }); },
+    loadSettings:  function()  { return call('load_settings'); },
+    chooseFolder:  function()  { return call('choose_folder'); },
+    deleteFile:    function(p) { return call('delete_file', { path: p }); },
+    importAudio:   function()  { return call('import_audio'); },
+    savePlaylists: function(d) { return call('save_playlists', { data: d }); },
+    loadPlaylists: function()  { return call('load_playlists'); },
+    exportAudio:   function()  { return call('export_audio'); },
   };
 })();
