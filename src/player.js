@@ -272,11 +272,17 @@ class PlayerController {
   // ======== EXPORT ========
 
   async _startExport() {
-    if (!this.exportingBook || !this.exportSentences) return;
+    const prog = this.el.exportProgress;
+    prog.textContent = '⏳ 检查数据...';
+    if (!this.exportingBook) { prog.textContent = '❌ 未选择书籍'; return; }
+    if (!this.exportSentences || this.exportSentences.length === 0) { prog.textContent = '❌ 文本分析失败，请重新导入'; return; }
     this.exportAbort = false;
     const SEG = 1000;
     const totalSegs = Math.ceil(this.exportSentences.length / SEG);
-    if (!confirm(`导出 ${totalSegs} 个音频（每段${SEG}句），约 ${Math.round(totalSegs*5)}MB。\n音频加入「我的收藏」。\n确定？`)) return;
+    if (!confirm(`导出 ${totalSegs} 个音频（每段${SEG}句），约 ${Math.round(totalSegs*5)}MB。\n音频加入「我的收藏」。\n确定？`)) {
+      prog.textContent = '已取消';
+      return;
+    }
 
     const speed = parseInt(this.el.speedSlider.value)/100;
     const nat = parseInt(this.el.naturalness.value)/100;
@@ -295,18 +301,22 @@ class PlayerController {
       const pitchBase = nat>0.5 ? this._shiftHz('+0Hz', Math.round((Math.random()-0.5)*6*nat)) : '+0Hz';
       const data = [{ text:combined, voiceGender:this.tts.narratorGender, pitch:pitchBase, rate:rPct>=0?'+'+rPct+'%':rPct+'%' }];
       try {
+        prog.textContent = `${i+1}/${totalSegs} 生成中...`;
         const res = await window.electronAPI.ttsGenerate(data, this.settings.exportPath||null);
         const fp = res?.files?.[0];
         if (fp) {
           playlist.tracks.push({ name:`${book.name}_段${i+1}`, path:fp, duration:segSents.length*3 });
+          prog.textContent = `${i+1}/${totalSegs} ✅`;
+        } else {
+          prog.textContent = `${i+1}/${totalSegs} ⚠️ 未返回文件路径`;
         }
-        this.el.exportProgress.textContent = `${i+1}/${totalSegs}`;
-      } catch (err) { alert(`段${i+1}失败: ${err.message}`); }
+      } catch (err) { prog.textContent = `❌ 段${i+1}: ${err.message}`; alert(`导出失败: ${err.message}`); break; }
     }
     this.el.btnStartExport.disabled = false; this.el.btnStartExport.textContent = '开始导出';
-    this.el.exportProgress.textContent = `完成！${playlist.tracks.length} 个音频已加入「我的收藏」`;
+    if (playlist.tracks.length > 0) {
+      prog.textContent = `完成！${playlist.tracks.length} 个音频已加入「我的收藏」`;
+    }
     this._savePlaylists(); this._renderPlaylistNav();
-    this._closeModal('export');
   }
 
   // ======== PLAYBACK ========
