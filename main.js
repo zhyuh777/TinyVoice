@@ -148,39 +148,34 @@ function synthesizeWindows(text, voiceGender, pitchHz, rateStr, outputPath) {
   const sapiRate = Math.max(-10, Math.min(10, Math.round(rateNum / 10)));
   const sapiPitch = Math.max(-10, Math.min(10, Math.round(pitchNum / 1.5)));
 
-  // XML-escape text for SSML (must happen BEFORE PS escaping)
+  // XML-escape text for SSML
   const xmlText = text
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
-  // PowerShell escaping for single-quoted string: only ' needs escaping as ''
   const psPath = outputPath.replace(/'/g, "''");
-
   const voices = SAPI_VOICES[voiceGender] || SAPI_VOICES.female;
-  const voiceSelect = voices.map(v => `try { $s.SelectVoice('${v}'); $voiceFound='${v}' } catch {}`).join('; ');
+  const voiceSelect = voices.map(v => `try{$s.SelectVoice('${v}');$voiceFound='${v}'}catch{}`).join(';');
 
-  // Use a here-string for the SSML to avoid PS string escaping nightmares
+  // PowerShell here-string (@'...'@) avoids escaping nightmares for the text body
   const psScript = `\
 Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $voiceFound = ''
 ${voiceSelect}
-if ($voiceFound -eq '') {
-  Write-Error "NO_CHINESE_VOICE:请安装中文语音包(设置→语音→添加语音)"
-  exit 1
-}
+if ($voiceFound -eq '') { Write-Error "NO_CHINESE_VOICE"; exit 1 }
 $rate = ${sapiRate}
 $pitch = ${sapiPitch}
-$text = @'
+$body = @'
 ${xmlText}
 '@
-$ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'><voice name='$voiceFound'><prosody rate='$rate' pitch='$pitch'>$text</prosody></voice></speak>"
+$ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'><voice name='$voiceFound'><prosody rate='$rate' pitch='$pitch'>$body</prosody></voice></speak>"
 try {
   $s.SetOutputToWaveFile('${psPath}')
   $s.SpeakSsml($ssml)
   $s.Dispose()
   if (-not (Test-Path '${psPath}')) { Write-Error "WAV_NOT_CREATED"; exit 1 }
-  Write-Output "OK:${psPath}"
+  Write-Output "OK"
 } catch {
   Write-Error $_.Exception.Message
   exit 1
@@ -190,26 +185,21 @@ try {
   fs.writeFileSync(tmpScript, '﻿' + psScript, 'utf-8');
 
   return new Promise((resolve, reject) => {
-    const proc = spawn('powershell', ['-ExecutionPolicy', 'Bypass', '-File', tmpScript], {
-      windowsHide: true,
-    });
+    const proc = spawn('powershell', ['-ExecutionPolicy', 'Bypass', '-File', tmpScript], { windowsHide: true });
     let stderr = '';
-    let stdout = '';
-    proc.stdout.on('data', d => { stdout += d.toString(); });
+    proc.stdout.on('data', d => { /* ignore */ });
     proc.stderr.on('data', d => { stderr += d.toString(); });
     proc.on('close', code => {
       try { fs.unlinkSync(tmpScript); } catch {}
       if (code !== 0) {
-        const errMsg = stderr.trim() || stdout.trim() || `exit ${code}`;
-        reject(new Error(errMsg));
+        reject(new Error(stderr.trim() || `PowerShell exit ${code}`));
         return;
       }
-      // Double-check the file has actual content
       try {
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 100) {
           resolve(outputPath);
         } else {
-          reject(new Error('WAV file empty or missing'));
+          reject(new Error('WAV file empty or missing — 请检查是否安装了中文语音包'));
         }
       } catch (e) {
         reject(new Error('WAV file check failed: ' + e.message));
