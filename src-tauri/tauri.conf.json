@@ -5,7 +5,8 @@
   "identifier": "com.tinyvoice.desktop",
   "build": {
     "frontendDist": "../src",
-    "devUrl": "http://localhost:1420"
+    "devUrl": "http://localhost:1420",
+    "beforeBundleCommand": ""
   },
   "app": {
     "windows": [
@@ -34,12 +35,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": [
+      "../src/**/*"
+    ],
     "macOS": {
       "minimumSystemVersion": "10.15"
-    },
-    "windows": {
-      "wix": null,
-      "nsis": null
     }
   }
 }
