@@ -71,12 +71,19 @@ function synthesize(text, voiceGender, pitchHz, rateStr, outputPath) {
           const wsHandshake = [
             `GET ${PATH} HTTP/1.1`,
             `Host: ${HOST}`,
+            'Pragma: no-cache',
+            'Cache-Control: no-cache',
             'Connection: Upgrade',
             'Upgrade: websocket',
-            `Sec-WebSocket-Version: 13`,
+            'Sec-WebSocket-Version: 13',
             `Sec-WebSocket-Key: ${wsKey}`,
-            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Origin: chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
+            'Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits',
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
+            'Accept-Language: zh-CN,zh;q=0.9,en;q=0.8',
+            'Sec-Fetch-Dest: empty',
+            'Sec-Fetch-Mode: websocket',
+            'Sec-Fetch-Site: none',
+            'Origin: https://www.bing.com',
             '', '',
           ].join('\r\n');
 
