@@ -110,11 +110,20 @@ ipcMain.handle('save-library', async (_, lib) => {
   return true;
 });
 
-// ---- Edge TTS ----
+// ---- TTS ----
 
 const BASE_VOICES = { female: 'zh-CN-XiaoxiaoNeural', male: 'zh-CN-YunxiNeural' };
+// Windows SAPI Chinese voices (fallback order)
+const SAPI_VOICES = { female: ['Microsoft Huihui Desktop', 'Microsoft Kangkang'], male: ['Microsoft Kangkang', 'Microsoft Huihui Desktop'] };
 
 function synthesizeOne(text, voiceGender, pitchHz, rateStr, outputPath) {
+  if (process.platform === 'win32') {
+    return synthesizeWindows(text, voiceGender, pitchHz, rateStr, outputPath);
+  }
+  return synthesizeMacOS(text, voiceGender, pitchHz, rateStr, outputPath);
+}
+
+function synthesizeMacOS(text, voiceGender, pitchHz, rateStr, outputPath) {
   const voiceId = BASE_VOICES[voiceGender] || BASE_VOICES.female;
   const edgeTts = path.join(__dirname, '.venv', 'bin', 'edge-tts');
 
@@ -130,6 +139,52 @@ function synthesizeOne(text, voiceGender, pitchHz, rateStr, outputPath) {
       resolve(outputPath);
     });
     proc.on('error', reject);
+  });
+}
+
+function synthesizeWindows(text, voiceGender, pitchHz, rateStr, outputPath) {
+  // Map app params to SAPI SSML prosody values
+  const rateNum = parseFloat(rateStr) || 0;
+  const pitchNum = parseInt(pitchHz) || 0;
+
+  // SAPI rate: -10 to 10, map from percentage roughly
+  const sapiRate = Math.round(rateNum / 10);
+  // SAPI pitch: -10 to 10, map from Hz roughly
+  const sapiPitch = Math.round(pitchNum / 1.5);
+
+  const voices = SAPI_VOICES[voiceGender] || SAPI_VOICES.female;
+  const voiceSelect = voices.map(v => `try { $s.SelectVoice('${v}') } catch {}`).join('; ');
+
+  // Escape text for PowerShell
+  const safeText = text.replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`');
+
+  const psScript = `
+Add-Type -AssemblyName System.Speech
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+${voiceSelect}
+$ssml = '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="zh-CN"><voice><prosody rate="${sapiRate}" pitch="${sapiPitch}">${safeText}</prosody></voice></speak>'
+$s.SetOutputToWaveFile('${outputPath.replace(/'/g, "''")}')
+$s.SpeakSsml($ssml)
+$s.Dispose()
+`.trim();
+
+  // Write script to temp file to avoid command-line length limits
+  const tmpScript = path.join(os.tmpdir(), `tts_${Date.now()}.ps1`);
+  fs.writeFileSync(tmpScript, '﻿' + psScript, 'utf-8'); // BOM for PowerShell
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn('powershell', ['-ExecutionPolicy', 'Bypass', '-File', tmpScript]);
+    let stderr = '';
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('close', code => {
+      try { fs.unlinkSync(tmpScript); } catch {}
+      if (code !== 0 || !fs.existsSync(outputPath)) { reject(new Error(stderr.trim() || `exit ${code}`)); return; }
+      resolve(outputPath);
+    });
+    proc.on('error', err => {
+      try { fs.unlinkSync(tmpScript); } catch {}
+      reject(err);
+    });
   });
 }
 
@@ -150,7 +205,7 @@ ipcMain.handle('tts-generate', async (_, sentences, outputDir) => {
       const pitchHz = sent.pitch || '+0Hz';
       const rateStr = sent.rate || '+0%';
       const hash = require('crypto').createHash('md5').update(text + gender + pitchHz + rateStr).digest('hex').slice(0, 8);
-      const outputPath = path.join(dir, `s_${String(idx).padStart(5, '0')}_${hash}.mp3`);
+      const outputPath = path.join(dir, `s_${String(idx).padStart(5, '0')}_${hash}${process.platform === 'win32' ? '.wav' : '.mp3'}`);
 
       if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
         files[idx] = outputPath;
@@ -186,7 +241,7 @@ ipcMain.handle('export-audio', async () => {
   const exported = [];
 
   if (fs.existsSync(srcDir)) {
-    const files = fs.readdirSync(srcDir).filter(f => f.endsWith('.mp3'));
+    const files = fs.readdirSync(srcDir).filter(f => (f.endsWith('.mp3') || f.endsWith('.wav')));
     for (const f of files) {
       const src = path.join(srcDir, f);
       const dest = path.join(destDir, f);
@@ -256,7 +311,7 @@ ipcMain.handle('list-generated-audio', async () => {
   const srcDir = path.join(os.tmpdir(), 'novel-player-tts');
   if (!fs.existsSync(srcDir)) return [];
   return fs.readdirSync(srcDir)
-    .filter(f => f.endsWith('.mp3'))
+    .filter(f => (f.endsWith('.mp3') || f.endsWith('.wav')))
     .map(f => ({ name: f, path: path.join(srcDir, f), size: fs.statSync(path.join(srcDir, f)).size }))
     .sort((a, b) => a.name.localeCompare(b.name));
 });

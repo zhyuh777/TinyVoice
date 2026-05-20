@@ -24,7 +24,14 @@
           ]
         }
       ],
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "extraResources": [
+        {
+          "from": ".venv",
+          "to": ".venv",
+          "filter": ["**/*", "!lib/python*/site-packages/pip/**", "!**/__pycache__/**", "!**/*.dist-info/**"]
+        }
+      ]
     },
     "win": {
       "target": {
@@ -40,13 +47,6 @@
       "pdf-parser.js",
       "src/**/*",
       "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": ".venv",
-        "to": ".venv",
-        "filter": ["**/*", "!lib/python*/site-packages/pip/**", "!**/__pycache__/**", "!**/*.dist-info/**"]
-      }
     ]
   },
   "dependencies": {
