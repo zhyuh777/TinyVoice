@@ -144,62 +144,59 @@ function synthesizeMacOS(text, voiceGender, pitchHz, rateStr, outputPath) {
 
 function synthesizeWindows(text, voiceGender, pitchHz, rateStr, outputPath) {
   const rateNum = parseFloat(rateStr) || 0;
-  const pitchNum = parseInt(pitchHz) || 0;
+  // SAPI Rate: -10 to 10
   const sapiRate = Math.max(-10, Math.min(10, Math.round(rateNum / 10)));
-  const sapiPitch = Math.max(-10, Math.min(10, Math.round(pitchNum / 1.5)));
-
-  // XML-escape text for SSML
-  const xmlText = text
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
   const psPath = outputPath.replace(/'/g, "''");
   const voices = SAPI_VOICES[voiceGender] || SAPI_VOICES.female;
   const voiceSelect = voices.map(v => `try{$s.SelectVoice('${v}');$voiceFound='${v}'}catch{}`).join(';');
 
-  // PowerShell here-string (@'...'@) avoids escaping nightmares for the text body
+  // Use Base64 to safely transport text through PowerShell without any escaping issues
+  const b64Text = Buffer.from(text, 'utf-8').toString('base64');
+
   const psScript = `\
 Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $voiceFound = ''
 ${voiceSelect}
 if ($voiceFound -eq '') { Write-Error "NO_CHINESE_VOICE"; exit 1 }
-$rate = ${sapiRate}
-$pitch = ${sapiPitch}
-$body = @'
-${xmlText}
-'@
-$ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'><voice name='$voiceFound'><prosody rate='$rate' pitch='$pitch'>$body</prosody></voice></speak>"
+$s.Rate = ${sapiRate}
+$text = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Text}'))
 try {
   $s.SetOutputToWaveFile('${psPath}')
-  $s.SpeakSsml($ssml)
+  $s.Speak($text)
   $s.Dispose()
   if (-not (Test-Path '${psPath}')) { Write-Error "WAV_NOT_CREATED"; exit 1 }
   Write-Output "OK"
 } catch {
-  Write-Error $_.Exception.Message
+  Write-Error ("TTS_ERROR:" + $_.Exception.Message)
+  try { $s.Dispose() } catch {}
   exit 1
 }`;
 
   const tmpScript = path.join(os.tmpdir(), `tts_${Date.now()}.ps1`);
-  fs.writeFileSync(tmpScript, '﻿' + psScript, 'utf-8');
+  fs.writeFileSync(tmpScript, '﻿' + psScript, { encoding: 'utf-8' });
 
   return new Promise((resolve, reject) => {
     const proc = spawn('powershell', ['-ExecutionPolicy', 'Bypass', '-File', tmpScript], { windowsHide: true });
     let stderr = '';
-    proc.stdout.on('data', d => { /* ignore */ });
+    proc.stdout.on('data', () => {});
     proc.stderr.on('data', d => { stderr += d.toString(); });
     proc.on('close', code => {
       try { fs.unlinkSync(tmpScript); } catch {}
       if (code !== 0) {
-        reject(new Error(stderr.trim() || `PowerShell exit ${code}`));
+        const cleanErr = stderr
+          .replace(/\s+/g, ' ').trim()
+          .replace(/.tts_\d+\.ps1/g, 'tts.ps1')
+          .slice(0, 300);
+        reject(new Error(cleanErr || `PowerShell exit ${code}`));
         return;
       }
       try {
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 100) {
           resolve(outputPath);
         } else {
-          reject(new Error('WAV file empty or missing — 请检查是否安装了中文语音包'));
+          reject(new Error('WAV file empty or missing'));
         }
       } catch (e) {
         reject(new Error('WAV file check failed: ' + e.message));
