@@ -27,6 +27,31 @@ function _getProxy() {
   return null;
 }
 
+function _connect(proxy, reject) {
+  return new Promise((resolve, reject2) => {
+    if (proxy) {
+      const cr = http.request({
+        hostname: proxy.host, port: proxy.port,
+        method: 'CONNECT', path: `${HOST}:443`,
+        timeout: 5000,
+      });
+      cr.on('connect', (res, raw) => {
+        try {
+          const ts = tls.connect({ socket: raw, host: HOST, servername: HOST }, () => resolve(ts));
+          ts.on('error', reject2);
+        } catch (e) { reject2(e); }
+      });
+      cr.on('error', reject2);
+      cr.on('timeout', () => { cr.destroy(); reject2(new Error('timeout')); });
+      cr.end();
+    } else {
+      const ts = tls.connect({ host: HOST, port: 443, servername: HOST, timeout: 8000 }, () => resolve(ts));
+      ts.on('error', reject2);
+      ts.on('timeout', () => { ts.destroy(); reject2(new Error('timeout')); });
+    }
+  });
+}
+
 function synthesize(text, voiceGender, pitchHz, rateStr, outputPath) {
   return new Promise((resolve, reject) => {
     try {
@@ -34,92 +59,87 @@ function synthesize(text, voiceGender, pitchHz, rateStr, outputPath) {
       const wsKey = crypto.randomBytes(16).toString('base64');
       const proxy = _getProxy();
 
-      const wsHandshake = [
-        `GET ${PATH} HTTP/1.1`,
-        `Host: ${HOST}`,
-        'Connection: Upgrade',
-        'Upgrade: websocket',
-        `Sec-WebSocket-Version: 13`,
-        `Sec-WebSocket-Key: ${wsKey}`,
-        'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Origin: chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
-        '', '',
-      ].join('\r\n');
+      // Try direct first, then proxy (direct is faster when available)
+      const tryOrder = proxy ? [null, proxy] : [null];
 
-      function handleUpgrade(sock, viaProxy) {
-        let buf = '';
-        let upgraded = false;
+      function attempt(idx) {
+        if (idx >= tryOrder.length) { reject(new Error('Edge TTS: 直连和代理均无法连接，请检查网络')); return; }
+        const p = tryOrder[idx];
 
-        sock.on('data', d => {
-          if (!upgraded) {
-            buf += d.toString('latin1');
-            const sep = buf.indexOf('\r\n\r\n');
-            if (sep === -1) return;
-            const status = buf.slice(0, sep).split('\r\n')[0];
-            if (!status.includes('101')) {
-              reject(new Error('Edge TTS: HTTP ' + status));
-              return;
+        _connect(p, reject).then(sock => {
+          // WebSocket handshake
+          const wsHandshake = [
+            `GET ${PATH} HTTP/1.1`,
+            `Host: ${HOST}`,
+            'Connection: Upgrade',
+            'Upgrade: websocket',
+            `Sec-WebSocket-Version: 13`,
+            `Sec-WebSocket-Key: ${wsKey}`,
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Origin: chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
+            '', '',
+          ].join('\r\n');
+
+          let buf = '';
+          let upgraded = false;
+
+          sock.on('data', d => {
+            if (!upgraded) {
+              buf += d.toString('latin1');
+              const sep = buf.indexOf('\r\n\r\n');
+              if (sep === -1) return;
+              const status = buf.slice(0, sep).split('\r\n')[0];
+              if (!status.includes('101')) {
+                reject(new Error('Edge TTS: HTTP ' + status));
+                return;
+              }
+              upgraded = true;
+              const remain = Buffer.from(buf.slice(sep + 4), 'latin1');
+
+              // Send config + SSML
+              _wsSend(sock, JSON.stringify({
+                context: { synthesis: { audio: {
+                  metadataoptions: { sentenceBoundaryEnabled: false, wordBoundaryEnabled: true },
+                  outputFormat: 'audio-24khz-48kbitrate-mono-mp3',
+                }}},
+              }));
+              _wsSend(sock, SSML(voice, rateStr, pitchHz, text));
+
+              const chunks = [];
+              if (remain.length > 0) chunks.push(remain);
+              const t = setTimeout(() => { sock.destroy(); reject(new Error('Edge TTS 服务响应超时')); }, 30000);
+              sock.on('data', dd => { clearTimeout(t); chunks.push(dd); });
+              sock.on('end', () => { clearTimeout(t); _decode(chunks, outputPath, resolve, reject); });
+              sock.on('error', e => { clearTimeout(t); reject(e); });
             }
-            upgraded = true;
-            // Remaining data after headers
-            const remain = Buffer.from(buf.slice(sep + 4), 'latin1');
-
-            // Send config + SSML
-            const config = JSON.stringify({
-              context: { synthesis: { audio: {
-                metadataoptions: { sentenceBoundaryEnabled: false, wordBoundaryEnabled: true },
-                outputFormat: 'audio-24khz-48kbitrate-mono-mp3',
-              }}},
-            });
-            _wsSend(sock, config);
-            const ssmlText = SSML(voice, rateStr, pitchHz, text);
-            _wsSend(sock, ssmlText);
-
-            // Collect audio
-            const chunks = [];
-            if (remain.length > 0) chunks.push(remain);
-            const t = setTimeout(() => { sock.destroy(); reject(new Error('Edge TTS 服务响应超时')); }, 30000);
-
-            sock.on('data', dd => { clearTimeout(t); chunks.push(dd); });
-            sock.on('end', () => { clearTimeout(t); _decode(chunks, outputPath, resolve, reject); });
-            sock.on('error', e => { clearTimeout(t); reject(e); });
-          }
-        });
-
-        sock.on('error', e => {
-          if (!upgraded) reject(new Error('Edge TTS 连接失败: ' + e.message));
-        });
-
-        const t = setTimeout(() => { sock.destroy(); reject(new Error('Edge TTS: WebSocket 握手超时，可能网络不通或代理未开')); }, 15000);
-        sock.once('data', () => clearTimeout(t));
-
-        sock.write(wsHandshake);
-      }
-
-      if (proxy) {
-        // HTTP CONNECT tunnel through proxy
-        const cr = http.request({
-          hostname: proxy.host, port: proxy.port,
-          method: 'CONNECT', path: `${HOST}:443`,
-          timeout: 8000,
-        });
-        cr.on('connect', (res, raw) => {
-          const ts = tls.connect({ socket: raw, host: HOST, servername: HOST }, () => {
-            handleUpgrade(ts, true);
           });
-          ts.on('error', e => reject(new Error('TLS失败: ' + e.message)));
+
+          sock.on('error', e => {
+            if (!upgraded) {
+              sock.destroy();
+              // Try next (proxy) if this was direct
+              if (p === null && tryOrder.length > idx + 1) { attempt(idx + 1); }
+              else { reject(new Error('Edge TTS 连接失败: ' + e.message)); }
+            }
+          });
+
+          const t = setTimeout(() => {
+            if (!upgraded) {
+              sock.destroy();
+              if (p === null && tryOrder.length > idx + 1) { attempt(idx + 1); }
+              else { reject(new Error('Edge TTS: WebSocket 握手超时')); }
+            }
+          }, 10000);
+          sock.once('data', () => clearTimeout(t));
+
+          sock.write(wsHandshake);
+        }).catch(e => {
+          if (p === null && tryOrder.length > idx + 1) { attempt(idx + 1); }
+          else { reject(new Error(`Edge TTS: ${p ? '代理' : '直连'}失败 — ` + e.message)); }
         });
-        cr.on('error', e => reject(new Error(`代理(${proxy.host}:${proxy.port})连接失败: ${e.message}。确认代理已开启？`)));
-        cr.on('timeout', () => { cr.destroy(); reject(new Error('代理连接超时')); });
-        cr.end();
-      } else {
-        // Direct TLS
-        const ts = tls.connect({ host: HOST, port: 443, servername: HOST, timeout: 15000 }, () => {
-          handleUpgrade(ts, false);
-        });
-        ts.on('error', e => reject(new Error('TLS连接失败: ' + e.message)));
-        ts.on('timeout', () => { ts.destroy(); reject(new Error('Edge TTS 连接超时')); });
       }
+
+      attempt(0);
     } catch (e) { reject(e); }
   });
 }
