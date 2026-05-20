@@ -304,11 +304,14 @@ class PlayerController {
         prog.textContent = `${i+1}/${totalSegs} 生成中...`;
         const res = await window.electronAPI.ttsGenerate(data, this.settings.exportPath||null);
         const fp = res?.files?.[0];
+        const errs = res?.errors || [];
         if (fp) {
           playlist.tracks.push({ name:`${book.name}_段${i+1}`, path:fp, duration:segSents.length*3 });
           prog.textContent = `${i+1}/${totalSegs} ✅`;
         } else {
-          prog.textContent = `${i+1}/${totalSegs} ⚠️ 未返回文件路径`;
+          prog.textContent = `❌ ${errs[0] || '未知错误：未返回文件'}`;
+          if (errs.length > 0) alert(`导出失败:\n${errs.join('\n')}`);
+          break;
         }
       } catch (err) { prog.textContent = `❌ 段${i+1}: ${err.message}`; alert(`导出失败: ${err.message}`); break; }
     }

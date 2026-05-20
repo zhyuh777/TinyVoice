@@ -217,6 +217,7 @@ ipcMain.handle('tts-generate', async (_, sentences, outputDir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const files = new Array(sentences.length).fill(null);
+  const errors = [];
   const BATCH = 5;
 
   for (let i = 0; i < sentences.length; i += BATCH) {
@@ -238,14 +239,16 @@ ipcMain.handle('tts-generate', async (_, sentences, outputDir) => {
           await synthesizeOne(text, gender, pitchHz, rateStr, outputPath);
           files[idx] = outputPath;
         } catch (err) {
-          console.error(`[tts] ${idx} FAILED:`, err.message);
+          const msg = err.message || String(err);
+          console.error(`[tts] ${idx} FAILED:`, msg);
+          errors.push(`段${idx}: ${msg}`);
         }
       }
     });
     await Promise.all(batch);
   }
 
-  return { files, output_dir: outputDir };
+  return { files, output_dir: outputDir, errors };
 });
 
 ipcMain.handle('tts-read-audio', async (_, p) => {
