@@ -24,56 +24,88 @@ const VOICES = { female: 'zh-CN-XiaoxiaoNeural', male: 'zh-CN-YunxiNeural' };
  */
 function synthesize(text, voiceGender, pitchHz, rateStr, outputPath) {
   return new Promise((resolve, reject) => {
-    const voice = VOICES[voiceGender] || VOICES.female;
-    const ssml = SSML_TMPL(voice, rateStr, pitchHz, _xmlEscape(text));
+    try {
+      const voice = VOICES[voiceGender] || VOICES.female;
+      const ssml = SSML_TMPL(voice, rateStr, pitchHz, _xmlEscape(text));
 
-    // Connect and do WebSocket upgrade
-    const req = https.request({
-      hostname: EDGE_HOST,
-      path: EDGE_PATH,
-      method: 'GET',
-      headers: {
-        'Connection': 'Upgrade',
-        'Upgrade': 'websocket',
-        'Sec-WebSocket-Version': '13',
-        'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64'),
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Origin': 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
-        'Accept-Encoding': 'gzip, deflate, br',
-      },
-      rejectUnauthorized: true,
-    });
+      // Try common proxy env vars (for users behind GFW)
+      const proxyUrl = process.env.https_proxy || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.HTTP_PROXY || '';
+      let proxyHost = null, proxyPort = null;
+      if (proxyUrl) {
+        const m = proxyUrl.match(/https?:\/\/([^:]+):(\d+)/);
+        if (m) { proxyHost = m[1]; proxyPort = parseInt(m[2]); }
+      }
 
-    req.on('upgrade', (res, socket) => {
-      // Send config message
-      const config = JSON.stringify({
-        context: {
-          synthesis: {
-            audio: {
-              metadataoptions: { sentenceBoundaryEnabled: false, wordBoundaryEnabled: true },
-              outputFormat: 'audio-24khz-48kbitrate-mono-mp3',
+      const opts = {
+        hostname: proxyHost || EDGE_HOST,
+        port: proxyPort || 443,
+        path: proxyHost ? `https://${EDGE_HOST}${EDGE_PATH}` : EDGE_PATH,
+        method: 'GET',
+        headers: {
+          'Connection': 'Upgrade',
+          'Upgrade': 'websocket',
+          'Sec-WebSocket-Version': '13',
+          'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64'),
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Origin': 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Host': EDGE_HOST,
+        },
+        rejectUnauthorized: true,
+        timeout: 15000,
+      };
+
+      const req = https.request(opts);
+
+      // Timeout handling
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Edge TTS 连接超时（15秒），请检查网络或设置代理'));
+      });
+
+      req.on('upgrade', (res, socket) => {
+        // Send config message
+        const config = JSON.stringify({
+          context: {
+            synthesis: {
+              audio: {
+                metadataoptions: { sentenceBoundaryEnabled: false, wordBoundaryEnabled: true },
+                outputFormat: 'audio-24khz-48kbitrate-mono-mp3',
+              },
             },
           },
-        },
+        });
+
+        _wsSend(socket, config);
+        _wsSend(socket, ssml);
+
+        const chunks = [];
+        const socketTimeout = setTimeout(() => {
+          socket.destroy();
+          reject(new Error('Edge TTS 服务响应超时'));
+        }, 30000);
+
+        socket.on('data', (data) => {
+          clearTimeout(socketTimeout);
+          chunks.push(data);
+        });
+
+        socket.on('end', () => {
+          clearTimeout(socketTimeout);
+          _processAudio(chunks, outputPath, resolve, reject);
+        });
+
+        socket.on('error', (err) => {
+          clearTimeout(socketTimeout);
+          reject(err);
+        });
       });
 
-      _wsSend(socket, config);
-      _wsSend(socket, ssml);
-
-      const chunks = [];
-      socket.on('data', (data) => {
-        chunks.push(data);
-      });
-
-      socket.on('end', () => {
-        _processAudio(chunks, outputPath, resolve, reject);
-      });
-
-      socket.on('error', reject);
-    });
-
-    req.on('error', reject);
-    req.end();
+      req.on('error', reject);
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
   });
 }
 
