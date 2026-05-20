@@ -148,26 +148,33 @@ function synthesizeWindows(text, voiceGender, pitchHz, rateStr, outputPath) {
   const psPath = outputPath.replace(/'/g, "''");
   const b64Text = Buffer.from(text, 'utf-8').toString('base64');
 
-  // Auto-detect installed voices instead of hardcoding
+  // Use SAPI COM (SAPI.SpVoice) instead of System.Speech to avoid
+  // AccessViolationException on some Windows installations
   const psScript = `\
-Add-Type -AssemblyName System.Speech
-$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$all = $s.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }
-$zh = $all | Where-Object { $_ -match 'Chinese|Microsoft.*Hui|Microsoft.*Kang|Microsoft.*Yao|Microsoft.*Han|zh-CN|zh-TW|zh-HK' }
-$vo = if ($zh) { $zh | Select-Object -First 1 } else { $all | Select-Object -First 1 }
-if (-not $vo) { Write-Error "NO_VOICE_INSTALLED"; exit 1 }
-$s.SelectVoice($vo)
-$s.Rate = ${sapiRate}
 $text = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64Text}'))
+$voice = $null
 try {
-  $s.SetOutputToWaveFile('${psPath}')
-  $s.Speak($text)
-  $s.Dispose()
-  if (-not (Test-Path '${psPath}')) { Write-Error "WAV_NOT_CREATED"; exit 1 }
-  Write-Output ("OK:" + $vo)
+  $s = New-Object -ComObject SAPI.SpVoice
+  $all = $s.GetVoices()
+  foreach ($v in $all) {
+    $desc = $v.GetDescription()
+    if ($desc -match 'Chinese|Hui|Kang|Yao|Han|zh-CN|zh-TW|zh-HK|Zira|David') {
+      $voice = $v; break
+    }
+  }
+  if (-not $voice) { $voice = $all.Item(0) }
+  if (-not $voice) { Write-Error "NO_VOICE"; exit 1 }
+  $s.Voice = $voice
+  $s.Rate = ${sapiRate}
+  $fs = New-Object -ComObject SAPI.SpFileStream
+  $fs.Open('${psPath}', 3, $false)
+  $s.AudioOutputStream = $fs
+  $s.Speak($text, 0)
+  $fs.Close()
+  Write-Output ("OK:" + $voice.GetDescription())
 } catch {
-  Write-Error ("TTS_ERROR:" + $_.Exception.Message)
-  try { $s.Dispose() } catch {}
+  Write-Error ("ERROR:" + $_.Exception.Message)
+  try { $fs.Close() } catch {}
   exit 1
 }`;
 
