@@ -33,27 +33,24 @@
       },
       "icon": "assets/icon-256.png"
     },
+    "compression": "maximum",
     "files": [
       "main.js",
       "preload.js",
+      "pdf-parser.js",
       "src/**/*",
-      "node_modules/**/*",
-      "!node_modules/.cache",
-      "!.venv"
+      "package.json"
     ],
     "extraResources": [
       {
         "from": ".venv",
-        "to": ".venv"
+        "to": ".venv",
+        "filter": ["**/*", "!lib/python*/site-packages/pip/**", "!**/__pycache__/**", "!**/*.dist-info/**"]
       }
-    ],
-    "asarUnpack": [
-      ".venv/**"
     ]
   },
   "dependencies": {
-    "adm-zip": "^0.5.17",
-    "pdf-parse": "^2.4.5"
+    "adm-zip": "^0.5.17"
   },
   "devDependencies": {
     "electron-builder": "^25.1.8",

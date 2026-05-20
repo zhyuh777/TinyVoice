@@ -58,10 +58,8 @@ function parseMd(filePath) {
 }
 
 function parsePdf(filePath) {
-  try {
-    const pdfParse = require('pdf-parse');
-    return '（PDF需异步解析，请转TXT后导入）';
-  } catch { return '（PDF解析不支持，请转TXT后导入）'; }
+  const { extractPdfText } = require('./pdf-parser');
+  return extractPdfText(filePath) || '（PDF解析失败，请转TXT后导入）';
 }
 
 // ---- Book Import ----
